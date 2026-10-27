@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-title" content="Line Art">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<title>Line Art AR</title>
+
+<!--
+  LINE ART AR  -  one file, no libraries.
+
+  1. You pick an image.
+  2. The code turns it into clean line art (three styles to choose from).
+  3. The lines are drawn on top of your live camera feed.
+  4. One finger moves the art, two fingers resize and rotate it.
+
+  The camera only works on a secure page (https:// or localhost), so open this
+  from your GitHub Pages link, not by double-clicking the file on a phone.
+-->
+
+<style>
+  :root {
+    --panel: rgba(20, 20, 24, 0.90);
+    --fg: #f2f2f5;
+    --muted: #a8a8b3;
+    --accent: #4cc2ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; background: #000; color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden; overscroll-behavior: none;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #111; }
+  #dimLayer { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+
+  #stage { position: fixed; inset: 0; touch-action: none; overflow: hidden; }
+  #art {
+    position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+    transform-origin: 0 0; will-change: transform;
+  }
+  #lines {
+    position: absolute; left: 0; top: 0;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  #lines.halo { filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, .95)) drop-shadow(0 0 1px rgba(0, 0, 0, .9)); }
+
+  #hint {
+    position: absolute; left: 0; right: 0; top: 38%;
+    text-align: center; padding: 0 24px; font-size: 17px;
+    color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, .8);
+    pointer-events: none;
+  }
+  #hint[hidden] { display: none; }
+
+  #notice {
+    position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 50%;
+    transform: translateX(-50%); max-width: 92%; z-index: 20;
+    background: rgba(30, 30, 36, .95); color: #fff; font-size: 14px;
+    padding: 10px 14px; border-radius: 12px; text-align: center;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, .5); cursor: pointer;
+  }
+  #notice[hidden] { display: none; }
+
+  #busy {
+    position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 15;
+    background: rgba(30, 30, 36, .92); color: #fff; font-size: 13px;
+    padding: 7px 12px; border-radius: 999px; pointer-events: none;
+  }
+  #busy[hidden] { display: none; }
+
+  /* Control panel */
+  #panel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    max-width: 640px; margin: 0 auto; max-height: 56vh; overflow-y: auto;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    background: var(--panel);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-radius: 18px 18px 0 0;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #panel.closed { display: none; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    appearance: none; border: 0; border-radius: 10px; padding: 10px 14px;
+    font: 600 14px system-ui, sans-serif; background: #383841; color: var(--fg); cursor: pointer;
+  }
+  .btn:active { filter: brightness(1.2); }
+  .btn.primary { background: var(--accent); color: #04202e; }
+  .btn.on { background: #ffd24c; color: #2a2000; }
+  .btn.ghost { background: transparent; color: var(--muted); margin-left: auto; }
+
+  .seg { display: flex; gap: 4px; background: #2b2b33; border-radius: 12px; padding: 3px; }
+  .seg button {
+    flex: 1; border: 0; background: transparent; color: var(--muted);
+    padding: 9px 6px; border-radius: 9px; font: 600 14px system-ui, sans-serif; cursor: pointer;
+  }
+  .seg button.on { background: var(--accent); color: #04202e; }
+  .help { font-size: 12px; color: var(--muted); margin-top: -4px; }
+
+  .sl {
+    display: grid; grid-template-columns: 112px 1fr; align-items: center;
+    gap: 8px; font-size: 13px; color: var(--muted);
+  }
+  .sl i { font-style: normal; color: var(--fg); margin-left: 4px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .color { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  input[type=color] { width: 38px; height: 34px; border: 0; padding: 0; background: none; border-radius: 8px; }
+
+  details { border-top: 1px solid #34343c; padding-top: 6px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0 8px; }
+  details[open] summary { color: var(--fg); }
+  details .inner { display: flex; flex-direction: column; gap: 10px; }
+  select {
+    background: #383841; color: var(--fg); border: 0; border-radius: 8px;
+    padding: 8px 10px; font: 14px system-ui, sans-serif;
+  }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .chk input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  #showPanel {
+    position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 10; background: var(--panel); color: var(--fg);
+    border: 0; border-radius: 999px; padding: 12px 18px; font: 600 14px system-ui, sans-serif;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  #showPanel[hidden] { display: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+
+<body>
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="dimLayer"></div>
+
+  <div id="stage">
+    <div id="art"><canvas id="lines"></canvas></div>
+    <div id="hint">Tap <b>Choose image</b> to turn a picture into line art</div>
+  </div>
+
+  <div id="notice" hidden></div>
+  <div id="busy" hidden>Working…</div>
+  <button id="showPanel" hidden>Controls</button>
+
+  <div id="panel">
+    <div class="row">
+      <label class="btn primary" for="file">Choose image</label>
+      <input type="file" id="file" accept="image/*" hidden>
+      <button class="btn" id="flipCam">Switch camera</button>
+      <button class="btn" id="lock">Lock</button>
+      <button class="btn ghost" id="hide">Hide</button>
+    </div>
+
+    <div class="seg" id="styleSeg">
+      <button data-style="outline" class="on">Outline</button>
+      <button data-style="sketch">Sketch</button>
+      <button data-style="ink">Ink</button>
+      <button data-style="combo">Combo</button>
+    </div>
+    <div class="help" id="styleHelp"></div>
+
+    <div class="sl"><span>Detail<i id="v_detail"></i></span><input type="range" id="detail" min="0" max="100" value="70"></div>
+    <div class="sl"><span>Smoothing<i id="v_smooth"></i></span><input type="range" id="smooth" min="0" max="40" value="8"></div>
+    <div class="sl"><span>Shading<i id="v_shade"></i></span><input type="range" id="shade" min="0" max="100" value="0"></div>
+    <div class="sl only-combo"><span>Simplify texture<i id="v_simplify"></i></span><input type="range" id="simplify" min="0" max="100" value="55"></div>
+    <div class="sl only-combo"><span>Fine detail<i id="v_fine"></i></span><input type="range" id="fine" min="0" max="100" value="40"></div>
+    <div class="sl"><span>Remove specks<i id="v_minlen"></i></span><input type="range" id="minlen" min="0" max="120" value="15"></div>
+    <div class="sl"><span>Line thickness<i id="v_thick"></i></span><input type="range" id="thick" min="1" max="10" step="1" value="3"></div>
+    <div class="sl"><span>Opacity<i id="v_opacity"></i></span><input type="range" id="opacity" min="10" max="100" value="95"></div>
+
+    <details>
+      <summary>More options</summary>
+      <div class="inner">
+        <div class="sl"><span>Local contrast<i id="v_contrast"></i></span><input type="range" id="contrast" min="0" max="100" value="20"></div>
+        <div class="sl"><span>Dim camera<i id="v_dim"></i></span><input type="range" id="dim" min="0" max="80" value="0"></div>
+        <div class="row">
+          <label class="color">Quality
+            <select id="quality">
+              <option value="700">Fast</option>
+              <option value="1100" selected>Normal</option>
+              <option value="1600">High</option>
+            </select>
+          </label>
+          <label class="chk"><input type="checkbox" id="halo"> Dark halo (easier to see)</label>
+        </div>
+        <div class="row"><button class="btn" id="resetStyle">Reset sliders for this style</button></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Shading options (hatching)</summary>
+      <div class="inner">
+        <div class="sl"><span>Line spacing<i id="v_space"></i></span><input type="range" id="space" min="4" max="16" value="8"></div>
+        <div class="sl"><span>Angle<i id="v_angle"></i></span><input type="range" id="angle" min="0" max="175" step="5" value="45"></div>
+        <label class="chk"><input type="checkbox" id="cross"> Cross-hatch the darkest areas</label>
+      </div>
+    </details>
+
+    <div class="row">
+      <label class="color">Line color <input type="color" id="color" value="#ff2d55"></label>
+      <button class="btn" id="mirror">Mirror</button>
+      <button class="btn" id="reset">Reset position</button>
+      <button class="btn" id="save">Save PNG</button>
+    </div>
+  </div>
+
+<script>
+// =====================================================================
+// CORE: the line-drawing engine (no page/DOM code in here)
+// =====================================================================
+// ==== CORE START ====
+
+// Blur the picture so tiny details / noise don't turn into lines.
+function gaussianBlur(src, w, h, sigma) {
+  const r = Math.max(1, Math.ceil(sigma * 3));
+  const k = new Float32Array(2 * r + 1);
+  let sum = 0;
+  for (let i = -r; i <= r; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    k[i + r] = v; sum += v;
+  }
+  for (let i = 0; i < k.length; i++) k[i] /= sum;
+
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let i = -r; i <= r; i++) {
+        let xx = x + i;
+        if (xx < 0) xx = 0; else if (xx >= w) xx = w - 1;
+        s += src[row + xx] * k[i + r];
+      }
+      tmp[row + x] = s;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let i = -r; i <= r; i++) {
+        let yy = y + i;
+        if (yy < 0) yy = 0; else if (yy >= h) yy = h - 1;
+        s += tmp[yy * w + x] * k[i + r];
+      }
+      out[y * w + x] = s;
+    }
+  }
+  return out;
+}
+
+// Fast average over a square window (uses an "integral image").
+function boxBlur(src, w, h, r) {
+  const W1 = w + 1;
+  const I = new Float64Array(W1 * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += src[y * w + x];
+      I[(y + 1) * W1 + x + 1] = I[y * W1 + x + 1] + row;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(w, x + r + 1);
+      const s = I[y1 * W1 + x1] - I[y0 * W1 + x1] - I[y1 * W1 + x0] + I[y0 * W1 + x0];
+      out[y * w + x] = s / ((x1 - x0) * (y1 - y0));
+    }
+  }
+  return out;
+}
+
+// Boost local contrast so detail in flat or dark areas shows up.
+function enhance(gray, w, h, amount) {
+  if (amount <= 0) return gray;
+  const r = Math.max(3, Math.round(Math.max(w, h) * 0.04));
+  const m = boxBlur(gray, w, h, r);
+  const k = amount / 100 * 3;
+  const out = new Float32Array(gray.length);
+  for (let i = 0; i < out.length; i++) {
+    const v = gray[i] + k * (gray[i] - m[i]);
+    out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  return out;
+}
+
+// Sobel: how sharply brightness changes at each pixel, and in which direction.
+function gradients(g, w, h) {
+  const gx = new Float32Array(w * h), gy = new Float32Array(w * h), mag = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const a = g[i - w - 1], b = g[i - w], c = g[i - w + 1];
+      const d = g[i - 1],                    f = g[i + 1];
+      const e = g[i + w - 1], f2 = g[i + w], j = g[i + w + 1];
+      const sx = (c + 2 * f + j) - (a + 2 * d + e);
+      const sy = (e + 2 * f2 + j) - (a + 2 * b + c);
+      gx[i] = sx; gy[i] = sy; mag[i] = Math.sqrt(sx * sx + sy * sy);
+    }
+  }
+  return { gx, gy, mag };
+}
+
+// Scale values so the 97th percentile equals 1 (makes sliders behave the same on every picture).
+function normalizeP(m, pct) {
+  let max = 0;
+  for (let i = 0; i < m.length; i++) if (m[i] > max) max = m[i];
+  if (max <= 0) return m;
+  const bins = 2048, hist = new Uint32Array(bins);
+  for (let i = 0; i < m.length; i++) hist[Math.min(bins - 1, (m[i] / max * bins) | 0)]++;
+  const target = m.length * pct;
+  let acc = 0, p = max;
+  for (let b = 0; b < bins; b++) {
+    acc += hist[b];
+    if (acc >= target) { p = (b + 1) / bins * max; break; }
+  }
+  const inv = 1 / p;
+  for (let i = 0; i < m.length; i++) m[i] *= inv;
+  return m;
+}
+
+// Keep only the very centre of each edge, so every line is 1 pixel wide.
+function nonMaxSuppress(gx, gy, mag, w, h) {
+  const out = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const m = mag[i];
+      if (m === 0) continue;
+      const ax = Math.abs(gx[i]), ay = Math.abs(gy[i]);
+      let n1, n2;
+      if (ay <= ax * 0.4142)       { n1 = mag[i - 1];     n2 = mag[i + 1]; }
+      else if (ay >= ax * 2.4142)  { n1 = mag[i - w];     n2 = mag[i + w]; }
+      else if ((gx[i] > 0) === (gy[i] > 0)) { n1 = mag[i - w - 1]; n2 = mag[i + w + 1]; }
+      else                         { n1 = mag[i - w + 1]; n2 = mag[i + w - 1]; }
+      if (m >= n1 && m >= n2) out[i] = m;
+    }
+  }
+  return out;
+}
+
+// Keep strong edges, plus weak edges only if they connect to a strong one.
+function hysteresis(nms, w, h, lo, hi) {
+  const out = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  let sp = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (nms[i] >= hi) { out[i] = 1; stack[sp++] = i; }
+  }
+  while (sp > 0) {
+    const i = stack[--sp];
+    const x = i % w, y = (i / w) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const j = ny * w + nx;
+        if (!out[j] && nms[j] >= lo) { out[j] = 1; stack[sp++] = j; }
+      }
+    }
+  }
+  return out;
+}
+
+// Delete little isolated bits (the "dots"): any connected group smaller than minSize pixels.
+function removeSmall(mask, w, h, minSize) {
+  if (minSize <= 1) return mask;
+  const seen = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  const comp = new Int32Array(w * h);
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || seen[s]) continue;
+    let sp = 0, cnt = 0;
+    stack[sp++] = s; seen[s] = 1;
+    while (sp > 0) {
+      const i = stack[--sp];
+      comp[cnt++] = i;
+      const x = i % w, y = (i / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const j = ny * w + nx;
+          if (mask[j] && !seen[j]) { seen[j] = 1; stack[sp++] = j; }
+        }
+      }
+    }
+    if (cnt < minSize) for (let k = 0; k < cnt; k++) mask[comp[k]] = 0;
+  }
+  return mask;
+}
+
+// Make lines thicker with smooth, rounded edges (stamps a soft disc on every line pixel).
+function stamp(src, w, h, r) {
+  const out = new Float32Array(w * h);
+  const R = Math.ceil(r + 0.5);
+  const offs = [];
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      const c = Math.max(0, Math.min(1, r + 0.5 - Math.hypot(dx, dy)));
+      if (c > 0) offs.push(dx, dy, c);
+    }
+  }
+  const n = offs.length / 3;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = src[y * w + x];
+      if (v <= 0.02) continue;
+      for (let k = 0; k < n; k++) {
+        const xx = x + offs[k * 3], yy = y + offs[k * 3 + 1];
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const c = v * offs[k * 3 + 2];
+        const j = yy * w + xx;
+        if (c > out[j]) out[j] = c;
+      }
+    }
+  }
+  return out;
+}
+
+// Darkness map used for shading: a blurred copy of the picture, stretched so the
+// darkest areas are about 1 and the lightest about 0 (works for dull or bright photos).
+function makeDarkness(gray, w, h, k) {
+  const tone = gaussianBlur(gray, w, h, 2.2 * k);
+  const bins = 512, hist = new Uint32Array(bins);
+  for (let i = 0; i < tone.length; i++) {
+    hist[Math.min(bins - 1, Math.max(0, (tone[i] * bins) | 0))]++;
+  }
+  const pick = frac => {
+    let acc = 0; const t = tone.length * frac;
+    for (let b = 0; b < bins; b++) { acc += hist[b]; if (acc >= t) return b / bins; }
+    return 1;
+  };
+  const lo = pick(0.02);
+  let hi = pick(0.98);
+  if (hi - lo < 0.05) hi = lo + 0.05;
+  const out = new Float32Array(tone.length);
+  for (let i = 0; i < out.length; i++) {
+    const v = 1 - (tone[i] - lo) / (hi - lo);
+    out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  return out;
+}
+
+// Pencil-style hatching: parallel lines that get thicker where the picture is darker.
+// Very dark areas can get a second set of lines crossing the first (cross-hatching).
+function hatchLayer(dark, w, h, p, k) {
+  const out = new Float32Array(w * h);
+  if (p.shade <= 0) return out;
+  const s = Math.max(2.5, p.space * k);              // gap between lines
+  const t0 = 0.80 - 0.62 * (p.shade / 100);          // how dark before hatching starts
+  const t1 = Math.min(0.92, t0 + 0.22);              // how dark before cross-hatching starts
+  const half0 = 0.55 * k;                            // thinnest line (half width)
+  const maxHalf = Math.max(half0, 0.33 * s);         // thickest line (always leaves a gap)
+  const a1 = p.angle * Math.PI / 180;
+  const c1 = Math.cos(a1), s1 = Math.sin(a1);
+  const line = (u, half) => {
+    let ph = u / s; ph -= Math.floor(ph);
+    const dist = Math.abs(ph - 0.5) * s;
+    const a = half - dist + 0.5;
+    return a <= 0 ? 0 : a >= 1 ? 1 : a;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const dk = dark[i];
+      if (dk <= t0) continue;
+      const f = Math.min(1, (dk - t0) / (1 - t0));
+      let a = line(x * c1 + y * s1, half0 + (maxHalf - half0) * f);
+      if (p.cross && dk > t1) {
+        const f2 = Math.min(1, (dk - t1) / (1 - t1));
+        const a2 = line(-x * s1 + y * c1, half0 + (maxHalf - half0) * f2);
+        if (a2 > a) a = a2;
+      }
+      out[i] = a;
+    }
+  }
+  return out;
+}
+
+// The whole pipeline. Returns an array of 0..1 "how much line" for every pixel.
+// `cache` remembers the slow steps so moving the cheap sliders feels instant.
+function computeAlpha(img, p, cache) {
+  const w = img.w, h = img.h, N = w * h;
+  const k = Math.max(w, h) / 1100;       // keeps the look the same at any quality
+  const d = p.detail / 100;
+
+  if (cache.ck !== p.contrast) {
+    cache.ck = p.contrast;
+    cache.base = enhance(img.gray, w, h, p.contrast);
+    cache.sk = null;
+  }
+  const base = cache.base;
+  if (!cache.dark) cache.dark = makeDarkness(img.gray, w, h, k);
+
+  const sk = p.style + '|' + p.smooth;
+  if (cache.sk !== sk) {
+    cache.sk = sk;
+    const wantOutline = p.style === 'outline' || p.style === 'combo';
+    const wantSketch = p.style === 'sketch' || p.style === 'combo';
+    const data = {};
+    if (wantOutline) {
+      const b = gaussianBlur(base, w, h, (0.6 + p.smooth * 0.1) * k);
+      const g = gradients(b, w, h);
+      normalizeP(g.mag, 0.97);
+      data.nms = nonMaxSuppress(g.gx, g.gy, g.mag, w, h);
+    }
+    if (wantSketch) {
+      const s1 = (0.6 + p.smooth * 0.06) * k;
+      const a = gaussianBlur(base, w, h, s1);
+      const b = gaussianBlur(base, w, h, s1 * 1.6);
+      const x = new Float32Array(N);
+      for (let i = 0; i < N; i++) { const v = b[i] - a[i]; x[i] = v > 0 ? v : 0; }
+      normalizeP(x, 0.97);
+      data.x = x;
+    }
+    if (p.style === 'ink') {
+      const a = gaussianBlur(base, w, h, (0.6 + p.smooth * 0.04) * k);
+      const m = boxBlur(a, w, h, Math.max(4, Math.round(Math.max(w, h) * 0.025)));
+      const x = new Float32Array(N);
+      for (let i = 0; i < N; i++) { const v = m[i] - a[i]; x[i] = v > 0 ? v : 0; }
+      normalizeP(x, 0.97);
+      data.x = x;
+    }
+    cache.data = data;
+  }
+
+  const rr = Math.max(0.5, p.thick * 0.5 * k);
+  let alpha;
+
+  if (p.style === 'outline') {
+    const hi = 1.5 - 1.25 * d, lo = hi * 0.45;
+    const mask = hysteresis(cache.data.nms, w, h, lo, hi);
+    removeSmall(mask, w, h, Math.round(p.minlen * k));
+    const f = new Float32Array(N);
+    for (let i = 0; i < N; i++) f[i] = mask[i];
+    alpha = stamp(f, w, h, rr);
+
+  } else if (p.style === 'combo') {
+    // Layer 1: outlines. Layer 2: fine pencil detail. Layer 3 (below): hatch shading.
+    // Busy, textured areas (like hair) keep only their strongest lines, and the
+    // hatching shades them instead, so they look even rather than scribbly.
+    const nms = cache.data.nms;
+    const hi = 1.5 - 1.25 * d, lo = hi * 0.45;
+    const mask = hysteresis(nms, w, h, lo, hi);
+    removeSmall(mask, w, h, Math.round(p.minlen * k));
+
+    // How crowded with lines is the area around each pixel?
+    const mf = new Float32Array(N);
+    for (let i = 0; i < N; i++) mf[i] = mask[i];
+    const dens = boxBlur(mf, w, h, Math.max(3, Math.round(9 * k)));
+    const dthr = 0.20 - 0.15 * (p.simplify / 100);
+    const dense = new Uint8Array(N);
+    for (let i = 0; i < N; i++) dense[i] = dens[i] > dthr ? 1 : 0;
+
+    if (p.simplify > 0) {
+      const strong = hi * 1.7;
+      for (let i = 0; i < N; i++) if (mask[i] && dense[i] && nms[i] < strong) mask[i] = 0;
+      removeSmall(mask, w, h, Math.round(p.minlen * k * 1.5));
+    }
+    for (let i = 0; i < N; i++) mf[i] = mask[i];
+    alpha = stamp(mf, w, h, rr);
+
+    if (p.fine > 0) {
+      const near = stamp(mf, w, h, 5 * k);               // keep clear of the outlines
+      const x = cache.data.x;
+      const e = 0.95 - 0.75 * (p.fine / 100), soft = 0.15;
+      const fa = new Float32Array(N);
+      const fm = new Uint8Array(N);
+      for (let i = 0; i < N; i++) {
+        if (dense[i] || near[i] > 0.02) continue;
+        const v = (x[i] - e) / soft;
+        const a = v <= 0 ? 0 : v >= 1 ? 1 : v;
+        fa[i] = a;
+        fm[i] = a > 0.1 ? 1 : 0;
+      }
+      const before = fm.slice();
+      removeSmall(fm, w, h, Math.round(p.minlen * k * k));
+      for (let i = 0; i < N; i++) {
+        if (before[i] && !fm[i]) fa[i] = 0;
+        if (fa[i] > alpha[i]) alpha[i] = fa[i];
+      }
+    }
+
+  } else if (p.style === 'sketch') {
+    alpha = softThreshold(cache.data.x, N, 0.95 - 0.85 * d, 0.18);
+    cleanSoft(alpha, w, h, Math.round(p.minlen * k * k));
+    if (rr > 0.6) alpha = stamp(alpha, w, h, rr);
+
+  } else {
+    alpha = softThreshold(cache.data.x, N, 0.85 - 0.75 * d, 0.12);
+    cleanSoft(alpha, w, h, Math.round(p.minlen * k * k));
+    if (rr > 0.6) alpha = stamp(alpha, w, h, rr);
+  }
+
+  // Shading can be added on top of any style.
+  if (p.shade > 0) {
+    const hl = hatchLayer(cache.dark, w, h, p, k);
+    for (let i = 0; i < N; i++) if (hl[i] > alpha[i]) alpha[i] = hl[i];
+  }
+  return alpha;
+}
+
+function softThreshold(x, N, e, soft) {
+  const a = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const v = (x[i] - e) / soft;
+    a[i] = v <= 0 ? 0 : v >= 1 ? 1 : v;
+  }
+  return a;
+}
+
+// Remove small isolated blobs from a soft (0..1) line map.
+function cleanSoft(alpha, w, h, minSize) {
+  const N = w * h;
+  const m = new Uint8Array(N);
+  for (let i = 0; i < N; i++) m[i] = alpha[i] > 0.1 ? 1 : 0;
+  const before = m.slice();
+  removeSmall(m, w, h, minSize);
+  for (let i = 0; i < N; i++) if (before[i] && !m[i]) alpha[i] = 0;
+}
+// ==== CORE END ====
+
+// =====================================================================
+// PAGE CODE: camera, controls, gestures
+// =====================================================================
+(() => {
+  const $ = id => document.getElementById(id);
+  const cam = $('cam'), art = $('art'), lines = $('lines'), ctx = lines.getContext('2d');
+  const stage = $('stage'), hint = $('hint'), notice = $('notice'), busy = $('busy');
+  const panel = $('panel'), showPanel = $('showPanel'), dimEl = $('dimLayer');
+
+  const SLIDERS = ['detail', 'smooth', 'minlen', 'thick', 'opacity', 'contrast', 'dim',
+                   'shade', 'simplify', 'fine', 'space', 'angle'];
+  const slider = id => $(id);
+  const setVal = (id, v) => { slider(id).value = v; $('v_' + id).textContent = v; };
+
+  const DEFAULTS = {
+    outline: { detail: 70, smooth: 8,  minlen: 15, thick: 3, contrast: 20, shade: 0,  simplify: 55, fine: 40 },
+    sketch:  { detail: 60, smooth: 9,  minlen: 30, thick: 1, contrast: 20, shade: 0,  simplify: 55, fine: 40 },
+    ink:     { detail: 50, smooth: 8,  minlen: 40, thick: 1, contrast: 0,  shade: 0,  simplify: 55, fine: 40 },
+    combo:   { detail: 70, smooth: 8,  minlen: 15, thick: 3, contrast: 20, shade: 35, simplify: 55, fine: 40 }
+  };
+  const HATCH_DEFAULTS = { space: 8, angle: 45, cross: false };
+  const HELP = {
+    outline: 'Clean pen-style outlines. Best all-rounder.',
+    sketch: 'Pencil-sketch look with lots of fine detail.',
+    ink: 'Bold shapes and shadows, like a stencil or ink drawing.',
+    combo: 'Outlines + fine detail + pencil-hatch shading. Hair and shadows look even, not scribbly.'
+  };
+
+  // ---------- State ----------
+  let style = 'outline';
+  let orig = null;                 // the chosen picture, kept so quality can change
+  let img = null;                  // { gray, w, h } at the current quality
+  let cache = {};
+  let locked = false, mirrored = false;
+  const st = { x: 0, y: 0, r: 0, s: 1 };
+  let facing = 'environment', stream = null, retryCamera = false;
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  function showNotice(text, canRetry) {
+    notice.textContent = text;
+    notice.hidden = false;
+    retryCamera = !!canRetry;
+  }
+  notice.onclick = () => { notice.hidden = true; if (retryCamera) startCam(); };
+
+  function hexToRgb(hex) {
+    return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+  }
+
+  // ---------- Settings ----------
+  function params() {
+    return {
+      style,
+      detail: +slider('detail').value,
+      smooth: +slider('smooth').value,
+      minlen: +slider('minlen').value,
+      thick: +slider('thick').value,
+      contrast: +slider('contrast').value,
+      shade: +slider('shade').value,
+      simplify: +slider('simplify').value,
+      fine: +slider('fine').value,
+      space: +slider('space').value,
+      angle: +slider('angle').value,
+      cross: $('cross').checked
+    };
+  }
+
+  function applyStyleDefaults() {
+    const d = DEFAULTS[style];
+    for (const k in d) setVal(k, d[k]);
+    $('styleHelp').textContent = HELP[style];
+    document.querySelectorAll('.only-combo').forEach(el => { el.hidden = style !== 'combo'; });
+    document.querySelectorAll('#styleSeg button').forEach(b =>
+      b.classList.toggle('on', b.dataset.style === style));
+  }
+
+  // ---------- Drawing the result ----------
+  function render() {
+    if (!img) return;
+    const alpha = computeAlpha(img, params(), cache);
+    const [r, g, b] = hexToRgb($('color').value);
+    const out = ctx.createImageData(img.w, img.h);
+    const d = out.data;
+    for (let i = 0; i < alpha.length; i++) {
+      const o = i * 4;
+      d[o] = r; d[o + 1] = g; d[o + 2] = b;
+      d[o + 3] = alpha[i] * 255;
+    }
+    ctx.putImageData(out, 0, 0);
+  }
+
+  // Redraw after the browser has shown "Working...", one at a time.
+  let pending = false, dirty = false;
+  function schedule() {
+    if (pending) { dirty = true; return; }
+    pending = true;
+    busy.hidden = false;
+    requestAnimationFrame(() => setTimeout(() => {
+      try { render(); } catch (e) { showNotice('Something went wrong drawing the lines. Try a smaller Quality setting.'); }
+      pending = false;
+      busy.hidden = true;
+      if (dirty) { dirty = false; schedule(); }
+    }, 0));
+  }
+
+  // ---------- Loading an image ----------
+  function loadImage(file) {
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = () => {
+      const maxOrig = 1600;
+      const sc = Math.min(1, maxOrig / Math.max(im.naturalWidth, im.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(im.naturalWidth * sc));
+      c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+      const cx = c.getContext('2d');
+      cx.fillStyle = '#fff';               // transparent PNGs become white
+      cx.fillRect(0, 0, c.width, c.height);
+      cx.drawImage(im, 0, 0, c.width, c.height);
+      orig = c;
+      URL.revokeObjectURL(url);
+      prepare();
+      resetPos();
+      hint.hidden = true;
+      schedule();
+    };
+    im.onerror = () => {
+      showNotice('Sorry, that image could not be read. Try a JPG or PNG.');
+      URL.revokeObjectURL(url);
+    };
+    im.src = url;
+  }
+
+  // Turn the picture into grayscale numbers at the chosen quality.
+  function prepare() {
+    if (!orig) return;
+    const maxDim = parseInt($('quality').value, 10);
+    const sc = Math.min(1, maxDim / Math.max(orig.width, orig.height));
+    const w = Math.max(1, Math.round(orig.width * sc));
+    const h = Math.max(1, Math.round(orig.height * sc));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.imageSmoothingQuality = 'high';
+    cx.drawImage(orig, 0, 0, w, h);
+    const px = cx.getImageData(0, 0, w, h).data;
+    const gray = new Float32Array(w * h);
+    for (let i = 0; i < gray.length; i++) {
+      gray[i] = (0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]) / 255;
+    }
+    img = { gray, w, h };
+    cache = {};
+    lines.width = w; lines.height = h;
+    fitSize();
+  }
+
+  function fitSize() {
+    if (!img) return;
+    const scale = Math.min(innerWidth * 0.9 / img.w, innerHeight * 0.6 / img.h);
+    lines.style.width = (img.w * scale) + 'px';
+    lines.style.height = (img.h * scale) + 'px';
+  }
+
+  // ---------- Moving, scaling, rotating ----------
+  function apply() {
+    art.style.transform = `translate(${st.x}px, ${st.y}px) rotate(${st.r}rad) scale(${st.s})`;
+  }
+  function resetPos() { st.x = 0; st.y = -innerHeight * 0.08; st.r = 0; st.s = 1; apply(); }
+  function applyMirror() { lines.style.transform = `translate(-50%, -50%) scaleX(${mirrored ? -1 : 1})`; }
+
+  const pts = new Map();
+  stage.addEventListener('pointerdown', e => {
+    if (locked || !img) return;
+    stage.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    const prev = pts.get(e.pointerId);
+    const cur = { x: e.clientX, y: e.clientY };
+    if (pts.size === 1) {
+      st.x += cur.x - prev.x;
+      st.y += cur.y - prev.y;
+    } else if (pts.size >= 2) {
+      let other = null;
+      for (const [id, p] of pts) if (id !== e.pointerId) { other = p; break; }
+      const v0 = { x: prev.x - other.x, y: prev.y - other.y };
+      const v1 = { x: cur.x - other.x, y: cur.y - other.y };
+      const d0 = Math.hypot(v0.x, v0.y), d1 = Math.hypot(v1.x, v1.y);
+      if (d0 > 0 && d1 > 0) {
+        st.s = clamp(st.s * d1 / d0, 0.1, 10);
+        let da = Math.atan2(v1.y, v1.x) - Math.atan2(v0.y, v0.x);
+        if (da > Math.PI) da -= 2 * Math.PI;
+        if (da < -Math.PI) da += 2 * Math.PI;
+        st.r += da;
+      }
+      st.x += (cur.x - prev.x) / 2;
+      st.y += (cur.y - prev.y) / 2;
+    }
+    pts.set(e.pointerId, cur);
+    apply();
+  });
+  const endPointer = e => pts.delete(e.pointerId);
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+
+  stage.addEventListener('wheel', e => {
+    if (locked || !img) return;
+    e.preventDefault();
+    if (e.shiftKey) st.r += -e.deltaY * 0.002;
+    else st.s = clamp(st.s * Math.exp(-e.deltaY * 0.0015), 0.1, 10);
+    apply();
+  }, { passive: false });
+
+  // ---------- Camera ----------
+  async function startCam() {
+    notice.hidden = true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showNotice('The camera needs a secure page. Open this app from its https:// link.');
+      return;
+    }
+    try {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+      cam.srcObject = stream;
+      cam.style.transform = facing === 'user' ? 'scaleX(-1)' : '';
+      await cam.play().catch(() => {});
+    } catch (err) {
+      if (err && err.name === 'NotAllowedError') {
+        showNotice('Camera permission was blocked. Allow camera access for this site, then tap here to retry.', true);
+      } else if (err && err.name === 'NotFoundError') {
+        showNotice('No camera was found on this device.');
+      } else {
+        showNotice('Could not start the camera. Tap here to retry.', true);
+      }
+    }
+  }
+
+  let wakeLock = null;
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+    catch (e) { /* optional feature */ }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') keepAwake();
+  });
+
+  // ---------- Buttons and sliders ----------
+  $('file').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) loadImage(f);
+    e.target.value = '';
+  });
+
+  SLIDERS.forEach(id => {
+    const el = slider(id);
+    el.addEventListener('input', () => {
+      $('v_' + id).textContent = el.value;
+      if (id === 'opacity') lines.style.opacity = el.value / 100;
+      else if (id === 'dim') dimEl.style.opacity = el.value / 100;
+      else schedule();
+    });
+  });
+
+  $('color').addEventListener('input', schedule);
+  $('halo').addEventListener('change', e => lines.classList.toggle('halo', e.target.checked));
+  $('quality').addEventListener('change', () => { prepare(); schedule(); });
+
+  document.querySelectorAll('#styleSeg button').forEach(b => {
+    b.onclick = () => {
+      style = b.dataset.style;
+      applyStyleDefaults();
+      schedule();
+    };
+  });
+  $('cross').addEventListener('change', schedule);
+  $('resetStyle').onclick = () => {
+    applyStyleDefaults();
+    setVal('space', HATCH_DEFAULTS.space);
+    setVal('angle', HATCH_DEFAULTS.angle);
+    $('cross').checked = HATCH_DEFAULTS.cross;
+    schedule();
+  };
+
+  $('flipCam').onclick = () => {
+    facing = facing === 'environment' ? 'user' : 'environment';
+    startCam();
+  };
+
+  $('lock').onclick = e => {
+    locked = !locked;
+    e.currentTarget.classList.toggle('on', locked);
+    e.currentTarget.textContent = locked ? 'Locked' : 'Lock';
+    pts.clear();
+  };
+
+  $('mirror').onclick = e => {
+    mirrored = !mirrored;
+    e.currentTarget.classList.toggle('on', mirrored);
+    applyMirror();
+  };
+
+  $('reset').onclick = resetPos;
+
+  $('save').onclick = () => {
+    if (!img) { showNotice('Choose an image first.'); return; }
+    lines.toBlob(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'line-art.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    }, 'image/png');
+  };
+
+  $('hide').onclick = () => { panel.classList.add('closed'); showPanel.hidden = false; };
+  showPanel.onclick = () => { panel.classList.remove('closed'); showPanel.hidden = true; };
+
+  addEventListener('resize', fitSize);
+
+  // ---------- Go ----------
+  SLIDERS.forEach(id => { $('v_' + id).textContent = slider(id).value; });
+  applyStyleDefaults();
+  setVal('opacity', 95);
+  setVal('dim', 0);
+  lines.style.opacity = 0.95;
+  applyMirror();
+  apply();
+  startCam();
+  keepAwake();
+
+  // Save the app on the phone so it also works with no internet.
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* offline mode is optional */ });
+    });
+  }
+})();
+</script>
+</body>
+</html>
